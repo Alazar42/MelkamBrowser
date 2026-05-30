@@ -13,6 +13,6 @@ def main() -> int:
     app.setOrganizationName("Melkam")
 
     window = MainWindow()
-    window.show()
+    window.showMaximized()
 
     return app.exec()

@@ -1,90 +1,312 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import Any
+from urllib.parse import quote_plus, urlparse
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QObject, QUrl, Signal, Slot, Qt
 from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
-    QLabel,
     QLineEdit,
     QMainWindow,
-    QPushButton,
-    QTabWidget,
-    QToolButton,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from .browser_view import BrowserView
-from .icon_manager import get_icon_manager
 from .favicon_manager import FaviconManager
 
 
 HOME_URL = "https://www.google.com"
 
 
-DEMO_PAGE = """<!DOCTYPE html>
+def _shell_html() -> str:
+    return """<!doctype html>
 <html>
 <head>
-<meta charset="utf-8">
+<meta charset=\"utf-8\" />
+<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
 <style>
+:root {
+  --bg: #202124;
+  --panel: #292a2d;
+  --panel-hover: #3c4043;
+  --line: #3c4043;
+  --text: #e8eaed;
+  --muted: #bdc1c6;
+  --accent: #8ab4f8;
+}
 html, body {
-    margin: 0;
-    padding: 0;
-    background: #202124;
-    color: #E8EAED;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    font-size: 16px;
-    line-height: 1.6;
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  user-select: none;
+  overflow: hidden;
+  height: 100%;
 }
-body {
-    padding: 32px;
-    max-width: 800px;
-    margin: 0 auto;
+#shell {
+  border-bottom: 1px solid var(--line);
+  overflow: hidden;
+  height: 92px;
 }
-h1 {
-    color: #8AB4F8;
-    margin-top: 0;
-    font-size: 32px;
-    font-weight: 300;
+#tabstrip {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  padding: 8px 10px 0 10px;
+  background: var(--bg);
 }
-p {
-    color: #BDC1C6;
-    font-size: 14px;
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--panel);
+  border-top-left-radius: 10px;
+  border-top-right-radius: 10px;
+  min-width: 140px;
+  max-width: 240px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  color: var(--text);
+  cursor: pointer;
 }
-button {
-    background: #8AB4F8;
-    color: #0D1117;
-    border: none;
-    padding: 10px 24px;
-    border-radius: 8px;
-    font-weight: 500;
-    cursor: pointer;
+.tab.active {
+  background: var(--panel-hover);
+  border-color: #5f6368;
+  border-bottom: 2px solid var(--accent);
 }
-button:hover {
-    background: #AECBFA;
+.tab .title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.tab .close {
+  width: 18px;
+  height: 18px;
+  border-radius: 9px;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+}
+.tab .close:hover {
+  background: #5f6368;
+  color: var(--text);
+}
+#newTab {
+  width: 28px;
+  height: 28px;
+  border-radius: 14px;
+  border: 1px solid transparent;
+  display: grid;
+  place-items: center;
+  color: var(--text);
+  cursor: pointer;
+  margin-left: 2px;
+}
+#newTab:hover {
+  background: var(--panel-hover);
+  border-color: #5f6368;
+}
+#toolbar {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-top: 1px solid #2a2d30;
+}
+#nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 16px;
+  border: 1px solid transparent;
+  display: grid;
+  place-items: center;
+  color: var(--text);
+  cursor: pointer;
+}
+.btn:hover {
+  background: var(--panel-hover);
+  border-color: #5f6368;
+}
+#omnibox {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+}
+#url {
+  width: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-size: 13px;
+}
+#profile {
+  width: 32px;
+  height: 32px;
+  border-radius: 16px;
+  background: #b3d9f5;
 }
 </style>
 </head>
 <body>
-<h1 id="title">Melkam Browser</h1>
-<button id="btn">Click Me</button>
-<p>Python executes directly inside the browser runtime.</p>
-<script type="text/python">
-title = document.query("#title")
-button = document.query("#btn")
+  <div id=\"shell\">
+    <div id=\"tabstrip\"></div>
+    <div id=\"toolbar\">
+      <div id=\"nav\">
+        <div class=\"btn\" id=\"back\">&#8592;</div>
+        <div class=\"btn\" id=\"forward\">&#8594;</div>
+        <div class=\"btn\" id=\"reload\">&#8635;</div>
+        <div class=\"btn\" id=\"home\">&#8962;</div>
+      </div>
+      <div id=\"omnibox\">
+        <input id=\"url\" placeholder=\"Search Google or type a URL\" />
+      </div>
+      <div id=\"profile\"></div>
+    </div>
+  </div>
 
-def clicked(event):
-    title.text = "Python Is Native"
+<script src=\"qrc:///qtwebchannel/qwebchannel.js\"></script>
+<script>
+let api = null;
+let tabs = [];
+let activeId = null;
 
-button.on("click", clicked)
+function esc(value) {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function render() {
+  const strip = document.getElementById('tabstrip');
+  strip.innerHTML = '';
+
+  for (const tab of tabs) {
+    const el = document.createElement('div');
+    el.className = 'tab' + (tab.id === activeId ? ' active' : '');
+    el.innerHTML = `<span class=\"title\">${esc(tab.title || 'Tab')}</span><span class=\"close\">&#10005;</span>`;
+    el.addEventListener('click', () => api && api.activateTab(tab.id));
+    el.querySelector('.close').addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      api && api.closeTab(tab.id);
+    });
+    strip.appendChild(el);
+  }
+
+  const plus = document.createElement('div');
+  plus.id = 'newTab';
+  plus.innerHTML = '&#43;';
+  plus.addEventListener('click', () => api && api.newTab());
+  strip.appendChild(plus);
+}
+
+function setUrl(value) {
+  document.getElementById('url').value = value || '';
+}
+
+window.shellSync = function(payloadJson) {
+  const payload = JSON.parse(payloadJson);
+  tabs = payload.tabs || [];
+  activeId = payload.activeId || null;
+  render();
+  setUrl(payload.currentUrl || '');
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  new QWebChannel(qt.webChannelTransport, (channel) => {
+    api = channel.objects.shellApi;
+
+    document.getElementById('back').addEventListener('click', () => api.back());
+    document.getElementById('forward').addEventListener('click', () => api.forward());
+    document.getElementById('reload').addEventListener('click', () => api.reload());
+    document.getElementById('home').addEventListener('click', () => api.home());
+
+    const url = document.getElementById('url');
+    url.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') {
+        api.navigate(url.value);
+      }
+    });
+
+    api.requestInitialState();
+  });
+});
 </script>
 </body>
 </html>
 """
+
+
+class ShellBridge(QObject):
+    def __init__(self, window: "MainWindow") -> None:
+        super().__init__()
+        self.window = window
+
+    @Slot()
+    def requestInitialState(self) -> None:
+        self.window._sync_shell()
+
+    @Slot()
+    def newTab(self) -> None:
+        self.window.new_tab(HOME_URL, "New Tab")
+
+    @Slot(str)
+    def activateTab(self, tab_id: str) -> None:
+        self.window._activate_tab_id(tab_id)
+
+    @Slot(str)
+    def closeTab(self, tab_id: str) -> None:
+        self.window._close_tab_id(tab_id)
+
+    @Slot(str)
+    def navigate(self, target: str) -> None:
+        self.window._navigate_current(target)
+
+    @Slot()
+    def back(self) -> None:
+        view = self.window.current_view()
+        if view is not None:
+            view.back()
+
+    @Slot()
+    def forward(self) -> None:
+        view = self.window.current_view()
+        if view is not None:
+            view.forward()
+
+    @Slot()
+    def reload(self) -> None:
+        view = self.window.current_view()
+        if view is not None:
+            view.reload()
+
+    @Slot()
+    def home(self) -> None:
+        self.window._navigate_current(HOME_URL)
 
 
 class MainWindow(QMainWindow):
@@ -92,247 +314,38 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Melkam Browser")
         self.resize(1280, 840)
-        self.setUnifiedTitleAndToolBarOnMac(False)
 
-        self.tabs = QTabWidget()
-        self.tabs.setDocumentMode(True)
-        self.tabs.setTabsClosable(True)
-        self.tabs.setMovable(True)
-        self.tabs.currentChanged.connect(self._sync_current_tab)
-        self.tabs.tabCloseRequested.connect(self._close_tab)
-        self.tabs.currentChanged.connect(self._on_tab_changed)
-        self.tabs.setStyleSheet(
-            """
-            QTabWidget::pane {
-                border: 0;
-                background: #202124;
-            }
-            QTabBar {
-                background: #202124;
-                padding: 8px 10px 0 10px;
-            }
-            QTabBar::tab {
-                background: #292A2D;
-                color: #E8EAED;
-                padding: 8px 16px;
-                border-top-left-radius: 10px;
-                border-top-right-radius: 10px;
-                margin-right: 6px;
-                min-width: 130px;
-                border: none;
-            }
-            QTabBar::tab:selected {
-                background: #3C4043;
-                color: #E8EAED;
-                border: 1px solid #5F6368;
-                border-bottom: 2px solid #8AB4F8;
-            }
-            QTabBar::tab:hover:!selected {
-                background: #3C4043;
-            }
-            QTabBar::close-button {
-                image: none;
-                margin-left: 8px;
-            }
-            QTabBar::close-button:hover {
-                background: #5F6368;
-                border-radius: 4px;
-            }
-            """
-        )
-
-        self.address_bar = QLineEdit()
-        self.address_bar.setPlaceholderText("Enter URL or HTML source")
-        self.address_bar.returnPressed.connect(self._navigate_current)
-        self.address_bar.setObjectName("AddressBar")
-        self.address_bar.setMinimumHeight(36)
-
-        self.status_label = QLabel("Ready")
-        self.status_label.setMinimumWidth(160)
-        self.status_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-        self.status_label.setObjectName("StatusLabel")
-
-        self.icon_manager = get_icon_manager(theme="dark")
         self.favicon_manager = FaviconManager(storage_root=Path.home() / ".melkam_browser")
 
-        self.back_button = QToolButton()
-        self.back_button.setIcon(self.icon_manager.icon("back", 18))
-        self.back_button.setIconSize(self.icon_manager.icon("back", 18).availableSizes()[0] if self.icon_manager.icon("back", 18).availableSizes() else self.back_button.iconSize())
-        self.back_button.setObjectName("NavButton")
-        self.back_button.clicked.connect(lambda: self.current_view().back() if hasattr(self.current_view(), "back") else None)
-        self.back_button.setFixedHeight(32)
+        self._tab_seq = 0
+        self._tab_ids: dict[int, str] = {}
 
-        self.forward_button = QToolButton()
-        self.forward_button.setIcon(self.icon_manager.icon("forward", 18))
-        self.forward_button.setIconSize(self.icon_manager.icon("forward", 18).availableSizes()[0] if self.icon_manager.icon("forward", 18).availableSizes() else self.forward_button.iconSize())
-        self.forward_button.setObjectName("NavButton")
-        self.forward_button.clicked.connect(lambda: self.current_view().forward() if hasattr(self.current_view(), "forward") else None)
-        self.forward_button.setFixedHeight(32)
+        self.shell_view = QWebEngineView()
+        self.shell_view.setFixedHeight(92)
+        self.shell_bridge = ShellBridge(self)
+        self.shell_channel = QWebChannel(self.shell_view.page())
+        self.shell_channel.registerObject("shellApi", self.shell_bridge)
+        self.shell_view.page().setWebChannel(self.shell_channel)
+        self.shell_view.setHtml(_shell_html(), QUrl("about:blank"))
 
-        self.reload_button = QToolButton()
-        self.reload_button.setIcon(self.icon_manager.icon("reload", 18))
-        self.reload_button.setIconSize(self.icon_manager.icon("reload", 18).availableSizes()[0] if self.icon_manager.icon("reload", 18).availableSizes() else self.reload_button.iconSize())
-        self.reload_button.setObjectName("NavButton")
-        self.reload_button.clicked.connect(lambda: self.current_view().reload())
-        self.reload_button.setFixedHeight(32)
+        self.page_stack = QStackedWidget()
 
-        self.home_button = QPushButton()
-        self.home_button.setIcon(self.icon_manager.icon("home", 18))
-        self.home_button.setIconSize(self.home_button.iconSize().expandedTo(self.home_button.sizeHint()))
-        self.home_button.setObjectName("PrimaryButton")
-        self.home_button.clicked.connect(self.load_home)
-        self.home_button.setFixedHeight(32)
-
-        self.go_button = QPushButton()
-        self.go_button.setIcon(self.icon_manager.icon("search", 18))
-        self.go_button.setIconSize(self.go_button.iconSize().expandedTo(self.go_button.sizeHint()))
-        self.go_button.setObjectName("PrimaryButton")
-        self.go_button.clicked.connect(self._navigate_current)
-        self.go_button.setFixedHeight(32)
-
-        self.new_tab_button = QToolButton()
-        self.new_tab_button.setIcon(self.icon_manager.icon("new_tab", 16))
-        self.new_tab_button.setIconSize(self.new_tab_button.iconSize().expandedTo(self.new_tab_button.sizeHint()))
-        self.new_tab_button.setObjectName("NewTabButton")
-        self.new_tab_button.clicked.connect(self.new_tab_action)
-        self.new_tab_button.setToolTip("New tab")
-        self.new_tab_button.setFixedSize(28, 28)
-
-        self.open_file_button = QToolButton()
-        self.open_file_button.setIcon(self.icon_manager.icon("menu", 16))
-        self.open_file_button.setIconSize(self.open_file_button.iconSize().expandedTo(self.open_file_button.sizeHint()))
-        self.open_file_button.setObjectName("NavButton")
-        self.open_file_button.clicked.connect(self.open_file)
-        self.open_file_button.setToolTip("Open local file")
-        self.open_file_button.setFixedHeight(32)
-
-        self.tabs.setCornerWidget(self.new_tab_button, Qt.Corner.TopRightCorner)
-
-        self.inspector_tabs = QTabWidget()
-        self.inspector_tabs.setDocumentMode(True)
-        self.inspector_tabs.setTabsClosable(False)
-        self.inspector_tabs.setMaximumHeight(280)
-        self.inspector_tabs.hide()
-
-        self.inspector_view = QWebEngineView()
-        self.inspector_tabs.addTab(self.inspector_view, "Inspector")
-
-        top_bar = QWidget()
-        top_bar.setObjectName("TopBar")
-        top_layout = QHBoxLayout(top_bar)
-        top_layout.setContentsMargins(10, 8, 10, 8)
-        top_layout.setSpacing(8)
-        top_layout.addWidget(self.back_button)
-        top_layout.addWidget(self.forward_button)
-        top_layout.addWidget(self.reload_button)
-        top_layout.addWidget(self.home_button)
-        top_layout.addWidget(self.open_file_button)
-        top_layout.addWidget(self.address_bar, 1)
-        top_layout.addWidget(self.go_button)
+        self.address_bar = QLineEdit()
+        self.address_bar.hide()
 
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        layout.addWidget(top_bar)
-        layout.addWidget(self.tabs)
-        layout.addWidget(self.inspector_tabs)
-        layout.addWidget(self.status_label)
+        layout.addWidget(self.shell_view)
+        layout.addWidget(self.page_stack, 1)
         self.setCentralWidget(container)
-        self.setStyleSheet(
-            """
-            QMainWindow {
-                background: #202124;
-            }
-            QWidget#TopBar {
-                background: #202124;
-                border-bottom: 1px solid #3C4043;
-            }
-            QWidget {
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-                font-size: 12px;
-                color: #E8EAED;
-            }
-            QWidget#AddressBar {
-                background: #292A2D;
-                color: #E8EAED;
-                border: 1px solid #3C4043;
-                border-radius: 20px;
-                padding: 8px 16px;
-                selection-background-color: #5F6368;
-                selection-color: #E8EAED;
-            }
-            QWidget#AddressBar:focus {
-                border: 1px solid #8AB4F8;
-                background: #292A2D;
-            }
-            QToolButton#NavButton {
-                background: transparent;
-                color: #E8EAED;
-                border: 1px solid transparent;
-                border-radius: 16px;
-                padding: 6px 10px;
-                min-width: 34px;
-                font-size: 13px;
-                font-weight: 600;
-            }
-            QToolButton#NavButton:hover {
-                background: #3C4043;
-                border: 1px solid #5F6368;
-            }
-            QToolButton#NavButton:pressed {
-                background: #5F6368;
-            }
-            QToolButton#NewTabButton {
-                background: transparent;
-                color: #E8EAED;
-                border: 1px solid transparent;
-                border-radius: 16px;
-                padding: 6px 10px;
-                font-size: 13px;
-                font-weight: 600;
-            }
-            QToolButton#NewTabButton:hover {
-                background: #3C4043;
-                border: 1px solid #5F6368;
-            }
-            QToolButton#NewTabButton:pressed {
-                background: #5F6368;
-            }
-            QPushButton#PrimaryButton {
-                background: #3C4043;
-                color: #E8EAED;
-                border: 1px solid #5F6368;
-                border-radius: 16px;
-                padding: 7px 14px;
-                font-weight: 500;
-            }
-            QPushButton#PrimaryButton:hover {
-                background: #5F6368;
-                border: 1px solid #80868B;
-            }
-            QPushButton#PrimaryButton:pressed {
-                background: #8AB4F8;
-                color: #0D1117;
-            }
-            QLabel#StatusLabel {
-                background: #292A2D;
-                color: #BDC1C6;
-                padding: 8px 12px;
-                border-top: 1px solid #3C4043;
-            }
-            QFrame {
-                border: 0;
-            }
-            """
-        )
 
         self._install_shortcuts()
         self.new_tab(HOME_URL, "Melkam Browser")
 
     def _install_shortcuts(self) -> None:
         shortcuts = [
-            ("Ctrl+L", self.address_bar.setFocus),
             ("Ctrl+T", self.new_tab_action),
             ("Ctrl+W", self.close_current_tab),
             ("Ctrl+R", self.reload_current_tab),
@@ -341,8 +354,6 @@ class MainWindow(QMainWindow):
             ("Alt+Right", self.go_forward),
             ("Ctrl+O", self.open_file),
             ("Alt+Home", self.load_home),
-            ("F12", self.toggle_inspector),
-            ("Ctrl+Shift+I", self.toggle_inspector),
         ]
         for sequence, callback in shortcuts:
             action = QAction(self)
@@ -350,89 +361,156 @@ class MainWindow(QMainWindow):
             action.triggered.connect(callback)
             self.addAction(action)
 
+    def _new_tab_id(self) -> str:
+        self._tab_seq += 1
+        return f"tab-{self._tab_seq}"
+
+    def _tab_index_for_id(self, tab_id: str) -> int:
+        for index, current_id in self._tab_ids.items():
+            if current_id == tab_id:
+                return index
+        return -1
+
+    def _reindex_tab_ids(self) -> None:
+      ordered_ids: list[str] = []
+      for index in range(self.page_stack.count()):
+        widget = self.page_stack.widget(index)
+        if widget is None:
+          continue
+
+        tab_id = ""
+        for key, value in self._tab_ids.items():
+          if self.page_stack.widget(key) is widget:
+            tab_id = value
+            break
+
+        if tab_id:
+          ordered_ids.append(tab_id)
+
+      self._tab_ids = {idx: tab_id for idx, tab_id in enumerate(ordered_ids)}
+
+    def _shell_payload(self) -> dict[str, Any]:
+        tabs: list[dict[str, str]] = []
+        for index in range(self.page_stack.count()):
+            widget = self.page_stack.widget(index)
+            if not isinstance(widget, BrowserView):
+                continue
+            tab_id = self._tab_ids.get(index, "")
+            title = widget.title() or "Tab"
+            tabs.append({"id": tab_id, "title": title})
+
+        active_index = self.page_stack.currentIndex()
+        active_id = self._tab_ids.get(active_index, "") if active_index >= 0 else ""
+        current_url = ""
+        current = self.current_view()
+        if current is not None:
+            current_url = current.current_url
+
+        return {
+            "tabs": tabs,
+            "activeId": active_id,
+            "currentUrl": current_url,
+        }
+
+    def _sync_shell(self) -> None:
+        payload = json.dumps(self._shell_payload())
+        script = f"window.shellSync && window.shellSync({json.dumps(payload)});"
+        self.shell_view.page().runJavaScript(script)
+
     def new_tab_action(self) -> None:
         self.new_tab(HOME_URL, "New Tab")
 
     def new_tab(self, target: str, title: str = "New Tab") -> BrowserView:
         view = BrowserView()
-        view.title_changed.connect(lambda value, tab=view: self._rename_tab(tab, value))
-        view.url_changed.connect(self.address_bar.setText)
-        view.status_changed.connect(self.status_label.setText)
-        index = self.tabs.addTab(view, title)
-        # default tab icon until favicon is available
-        self.tabs.setTabIcon(index, self.icon_manager.icon("browser", 16))
-        # connect favicon updates
-        def _on_url_changed(url: str, idx=index):
-            self.favicon_manager.fetch(url)
-
-        view.url_changed.connect(_on_url_changed)
-        def _apply_favicon(host: str, path: str, idx=index):
-            from PySide6.QtGui import QIcon
-            if path:
-                self.tabs.setTabIcon(idx, QIcon(path))
-        self.favicon_manager.favicon_ready.connect(_apply_favicon)
-        self.tabs.setCurrentIndex(index)
-        self._attach_inspector_to_current()
+        view.title_changed.connect(lambda _value: self._sync_shell())
+        view.url_changed.connect(lambda _value: self._sync_shell())
+        index = self.page_stack.addWidget(view)
+        self._tab_ids[index] = self._new_tab_id()
+        self.page_stack.setCurrentIndex(index)
         view.navigate(target)
+        self._sync_shell()
         return view
 
-    def current_view(self) -> BrowserView:
-        widget = self.tabs.currentWidget()
-        assert isinstance(widget, BrowserView)
-        return widget
+    def current_view(self) -> BrowserView | None:
+        widget = self.page_stack.currentWidget()
+        if isinstance(widget, BrowserView):
+            return widget
+        return None
 
-    def _navigate_current(self) -> None:
-        self.current_view().navigate(self.address_bar.text())
+    def _activate_tab_id(self, tab_id: str) -> None:
+        index = self._tab_index_for_id(tab_id)
+        if index >= 0:
+            self.page_stack.setCurrentIndex(index)
+            self._sync_shell()
+
+    def _close_tab_id(self, tab_id: str) -> None:
+        index = self._tab_index_for_id(tab_id)
+        if index >= 0:
+            self._close_tab(index)
+
+    def _navigate_current(self, target: str) -> None:
+      resolved = self._resolve_omnibox_target(target)
+      view = self.current_view()
+      if view is not None:
+        view.navigate(resolved)
+
+    def _resolve_omnibox_target(self, target: str) -> str:
+      stripped = target.strip()
+      if not stripped:
+        return HOME_URL
+
+      if self._looks_like_link(stripped):
+        return stripped
+
+      return f"https://www.google.com/search?q={quote_plus(stripped)}"
+
+    def _looks_like_link(self, value: str) -> bool:
+      parsed = urlparse(value)
+      if parsed.scheme in {"http", "https", "file", "about", "data"}:
+        return True
+      if value.startswith(("www.", "ftp.")):
+        return True
+      if Path(value).exists():
+        return True
+      if "/" in value or "\\" in value:
+        return True
+      if "." in value and " " not in value:
+        return True
+      return False
 
     def load_home(self) -> None:
-        self.current_view().navigate(HOME_URL)
+        self._navigate_current(HOME_URL)
 
     def reload_current_tab(self) -> None:
-        self.current_view().reload()
+        view = self.current_view()
+        if view is not None:
+            view.reload()
 
     def close_current_tab(self) -> None:
-        self._close_tab(self.tabs.currentIndex())
+        self._close_tab(self.page_stack.currentIndex())
 
     def go_back(self) -> None:
         view = self.current_view()
-        if hasattr(view, "back"):
+        if view is not None:
             view.back()
 
     def go_forward(self) -> None:
         view = self.current_view()
-        if hasattr(view, "forward"):
+        if view is not None:
             view.forward()
 
     def _close_tab(self, index: int) -> None:
-        if self.tabs.count() <= 1:
+        if index < 0 or self.page_stack.count() <= 1:
             return
-        widget = self.tabs.widget(index)
-        if isinstance(widget, BrowserView):
-            if widget.page_model and hasattr(widget.page_model, "python_runtime"):
-                widget.page_model.python_runtime.cleanup()
-        self.tabs.removeTab(index)
-        if widget is not None:
-            widget.deleteLater()
-
-    def _sync_current_tab(self, index: int) -> None:
-        widget = self.tabs.widget(index)
-        if isinstance(widget, BrowserView):
-            self.address_bar.setText(widget.current_url)
-
-    def _on_tab_changed(self, index: int) -> None:
-        self._sync_current_tab(index)
-        self._attach_inspector_to_current()
-
-    def _attach_inspector_to_current(self) -> None:
-        widget = self.tabs.currentWidget()
-        if isinstance(widget, BrowserView):
-            widget.attach_devtools(self.inspector_view)
-
-    def toggle_inspector(self) -> None:
-        showing = self.inspector_tabs.isVisible()
-        self.inspector_tabs.setVisible(not showing)
-        if not showing:
-            self._attach_inspector_to_current()
+        widget = self.page_stack.widget(index)
+        if widget is None:
+            return
+        self.page_stack.removeWidget(widget)
+        widget.deleteLater()
+        self._reindex_tab_ids()
+        if self.page_stack.currentIndex() < 0 and self.page_stack.count() > 0:
+            self.page_stack.setCurrentIndex(0)
+        self._sync_shell()
 
     def open_file(self) -> None:
         selected, _ = QFileDialog.getOpenFileName(
@@ -442,9 +520,4 @@ class MainWindow(QMainWindow):
             "Web Files (*.html *.htm *.txt *.md);;All Files (*.*)",
         )
         if selected:
-            self.current_view().navigate(selected)
-
-    def _rename_tab(self, view: BrowserView, title: str) -> None:
-        index = self.tabs.indexOf(view)
-        if index >= 0:
-            self.tabs.setTabText(index, title or "Tab")
+            self._navigate_current(selected)
