@@ -39,4 +39,4 @@ The app starts in a Chromium-rendered shell, and the example page demonstrates `
 ## Notes
 
 - The browser shell uses Qt WebEngine as the rendering backend.
-- The Python DOM bridge is designed for the bundled showcase and browser pages, not full web compatibility.
+- The Python DOM bridge covers common DOM operations for the bundled showcase and browser pages, but it is not a full browser DOM implementation.

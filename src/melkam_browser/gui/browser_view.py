@@ -22,6 +22,7 @@ from ..core.parser import HtmlParser
 
 PYTHON_SCRIPT_TYPE = "text/python"
 PYTHON_EVENT_PREFIX = "__MELKAM_PY_EVT__:"
+BRIDGE_ATTR = "data-melkam-bridge-id"
 
 
 @dataclass
@@ -76,19 +77,27 @@ class JSBridge:
         return self.view.evaluate_js_sync(script)
 
 
+class _TextFragment:
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    def to_html(self) -> str:
+        return html.escape(self.text)
+
+
 class ElementBuilder:
     def __init__(self, tag: str) -> None:
         self.tag = tag.lower()
         self.attributes: dict[str, str] = {}
-        self.children: list[ElementBuilder | str] = []
+        self.children: list[ElementBuilder | _TextFragment] = []
         self._html: str | None = None
 
     @property
     def text(self) -> str:
         parts: list[str] = []
         for child in self.children:
-            if isinstance(child, str):
-                parts.append(child)
+            if isinstance(child, _TextFragment):
+                parts.append(child.text)
             else:
                 parts.append(child.to_html())
         return "".join(parts)
@@ -96,13 +105,13 @@ class ElementBuilder:
     @text.setter
     def text(self, value: str) -> None:
         self._html = None
-        self.children = [value]
+        self.children = [_TextFragment(value)]
 
     @property
     def html(self) -> str:
         if self._html is not None:
             return self._html
-        return "".join(child if isinstance(child, str) else child.to_html() for child in self.children)
+        return "".join(child.to_html() for child in self.children)
 
     @html.setter
     def html(self, value: str) -> None:
@@ -114,11 +123,14 @@ class ElementBuilder:
 
     def append(self, child: "ElementBuilder | str") -> None:
         self._html = None
-        self.children.append(child)
+        if isinstance(child, str):
+            self.children.append(_TextFragment(child))
+        else:
+            self.children.append(child)
 
     def to_html(self) -> str:
         attrs = "".join(f' {name}="{html.escape(value, quote=True)}"' for name, value in self.attributes.items())
-        children = self._html if self._html is not None else "".join(child if isinstance(child, str) else child.to_html() for child in self.children)
+        children = self._html if self._html is not None else "".join(child.to_html() for child in self.children)
         return f"<{self.tag}{attrs}>{children}</{self.tag}>"
 
 
@@ -130,32 +142,73 @@ class ElementProxy:
     def _query(self, expression: str) -> Any:
         return self.view.evaluate_js_sync(expression)
 
+    def _target(self) -> str:
+        return f"document.querySelector({json.dumps(self.selector)})"
+
+    def _target_script(self, body: str) -> str:
+        return f"(function(){{const el={self._target()}; if(!el) return null; {body} }})()"
+
     @property
     def text(self) -> str:
-        script = f"(function(){{const el=document.querySelector({json.dumps(self.selector)}); if(!el) return ''; if('value' in el) return el.value; return el.textContent || ''; }})()"
+        script = f"(function(){{const el={self._target()}; if(!el) return ''; if('value' in el) return el.value; return el.textContent || ''; }})()"
         return str(self._query(script) or "")
 
     @text.setter
     def text(self, value: str) -> None:
-        script = f"(function(){{const el=document.querySelector({json.dumps(self.selector)}); if(!el) return; if('value' in el) {{ el.value={json.dumps(value)}; }} else {{ el.textContent={json.dumps(value)}; }} }})()"
+        script = f"(function(){{const el={self._target()}; if(!el) return; if('value' in el) {{ el.value={json.dumps(value)}; }} else {{ el.textContent={json.dumps(value)}; }} }})()"
+        self._query(script)
+
+    @property
+    def value(self) -> str:
+        script = f"(function(){{const el={self._target()}; return el && 'value' in el ? el.value : ''; }})()"
+        return str(self._query(script) or "")
+
+    @value.setter
+    def value(self, value: str) -> None:
+        script = f"(function(){{const el={self._target()}; if(el && 'value' in el) el.value={json.dumps(value)}; }})()"
         self._query(script)
 
     @property
     def html(self) -> str:
-        script = f"(function(){{const el=document.querySelector({json.dumps(self.selector)}); return el ? el.innerHTML : ''; }})()"
+        script = f"(function(){{const el={self._target()}; return el ? el.innerHTML : ''; }})()"
         return str(self._query(script) or "")
 
     @html.setter
     def html(self, value: str) -> None:
-        script = f"(function(){{const el=document.querySelector({json.dumps(self.selector)}); if(el) el.innerHTML={json.dumps(value)}; }})()"
+        script = f"(function(){{const el={self._target()}; if(el) el.innerHTML={json.dumps(value)}; }})()"
         self._query(script)
 
+    @property
+    def class_name(self) -> str:
+        script = f"(function(){{const el={self._target()}; return el ? el.className : ''; }})()"
+        return str(self._query(script) or "")
+
+    @class_name.setter
+    def class_name(self, value: str) -> None:
+        script = f"(function(){{const el={self._target()}; if(el) el.className={json.dumps(value)}; }})()"
+        self._query(script)
+
+    @property
+    def checked(self) -> bool:
+        script = f"(function(){{const el={self._target()}; return !!(el && 'checked' in el && el.checked); }})()"
+        return bool(self._query(script))
+
+    @checked.setter
+    def checked(self, value: bool) -> None:
+        script = f"(function(){{const el={self._target()}; if(el && 'checked' in el) el.checked={json.dumps(bool(value))}; }})()"
+        self._query(script)
+
+    @property
+    def tag_name(self) -> str:
+        script = f"(function(){{const el={self._target()}; return el ? el.tagName.toLowerCase() : ''; }})()"
+        return str(self._query(script) or "")
+
     def set_attribute(self, name: str, value: str) -> None:
-        script = f"(function(){{const el=document.querySelector({json.dumps(self.selector)}); if(el) el.setAttribute({json.dumps(name)}, {json.dumps(value)}); }})()"
+        script = f"(function(){{const el={self._target()}; if(el) el.setAttribute({json.dumps(name)}, {json.dumps(value)}); }})()"
         self._query(script)
 
     def get_attribute(self, name: str, default: str | None = None) -> str | None:
-        script = f"(function(){{const el=document.querySelector({json.dumps(self.selector)}); return el ? el.getAttribute({json.dumps(name)}) : null; }})()"
+        script = f"(function(){{const el={self._target()}; return el ? el.getAttribute({json.dumps(name)}) : null; }})()"
         result = self._query(script)
         return default if result in {None, "", False} else str(result)
 
@@ -166,11 +219,67 @@ class ElementProxy:
             fragment = child.html
         else:
             fragment = html.escape(child)
-        script = f"(function(){{const el=document.querySelector({json.dumps(self.selector)}); if(el) el.insertAdjacentHTML('beforeend', {json.dumps(fragment)}); }})()"
+        script = f"(function(){{const el={self._target()}; if(el) el.insertAdjacentHTML('beforeend', {json.dumps(fragment)}); }})()"
+        self._query(script)
+
+    def prepend(self, child: ElementBuilder | str | "ElementProxy") -> None:
+        if isinstance(child, ElementBuilder):
+            fragment = child.to_html()
+        elif isinstance(child, ElementProxy):
+            fragment = child.html
+        else:
+            fragment = html.escape(child)
+        script = f"(function(){{const el={self._target()}; if(el) el.insertAdjacentHTML('afterbegin', {json.dumps(fragment)}); }})()"
+        self._query(script)
+
+    def before(self, child: ElementBuilder | str | "ElementProxy") -> None:
+        if isinstance(child, ElementBuilder):
+            fragment = child.to_html()
+        elif isinstance(child, ElementProxy):
+            fragment = child.html
+        else:
+            fragment = html.escape(child)
+        script = f"(function(){{const el={self._target()}; if(el) el.insertAdjacentHTML('beforebegin', {json.dumps(fragment)}); }})()"
+        self._query(script)
+
+    def after(self, child: ElementBuilder | str | "ElementProxy") -> None:
+        if isinstance(child, ElementBuilder):
+            fragment = child.to_html()
+        elif isinstance(child, ElementProxy):
+            fragment = child.html
+        else:
+            fragment = html.escape(child)
+        script = f"(function(){{const el={self._target()}; if(el) el.insertAdjacentHTML('afterend', {json.dumps(fragment)}); }})()"
+        self._query(script)
+
+    def replace_with(self, child: ElementBuilder | str | "ElementProxy") -> None:
+        if isinstance(child, ElementBuilder):
+            fragment = child.to_html()
+        elif isinstance(child, ElementProxy):
+            fragment = child.html
+        else:
+            fragment = html.escape(child)
+        script = f"(function(){{const el={self._target()}; if(el) el.outerHTML={json.dumps(fragment)}; }})()"
+        self._query(script)
+
+    def clear(self) -> None:
+        script = f"(function(){{const el={self._target()}; if(el) el.innerHTML=''; }})()"
+        self._query(script)
+
+    def focus(self) -> None:
+        script = f"(function(){{const el={self._target()}; if(el && el.focus) el.focus(); }})()"
+        self._query(script)
+
+    def blur(self) -> None:
+        script = f"(function(){{const el={self._target()}; if(el && el.blur) el.blur(); }})()"
+        self._query(script)
+
+    def click(self) -> None:
+        script = f"(function(){{const el={self._target()}; if(el && el.click) el.click(); }})()"
         self._query(script)
 
     def remove(self) -> None:
-        script = f"(function(){{const el=document.querySelector({json.dumps(self.selector)}); if(el) el.remove(); }})()"
+        script = f"(function(){{const el={self._target()}; if(el) el.remove(); }})()"
         self._query(script)
 
     def on(self, event: str, callback: Callable[[BrowserEvent], None]) -> None:
@@ -179,6 +288,10 @@ class ElementProxy:
     def query(self, selector: str) -> "ElementProxy | None":
         nested = f"{self.selector} {selector}"
         return self.view.query_selector(nested)
+
+    def query_all(self, selector: str) -> list["ElementProxy"]:
+        nested = f"{self.selector} {selector}"
+        return self.view.query_all(nested)
 
 
 class DocumentProxy:
@@ -189,14 +302,48 @@ class DocumentProxy:
     def query(self, selector: str) -> ElementProxy | None:
         return self.view.query_selector(selector)
 
+    def query_all(self, selector: str) -> list[ElementProxy]:
+        return self.view.query_all(selector)
+
     def querySelector(self, selector: str) -> ElementProxy | None:  # noqa: N802
         return self.query(selector)
+
+    def querySelectorAll(self, selector: str) -> list[ElementProxy]:  # noqa: N802
+        return self.query_all(selector)
 
     def create_element(self, tag: str) -> ElementBuilder:
         return ElementBuilder(tag)
 
     def createElement(self, tag: str) -> ElementBuilder:  # noqa: N802
         return self.create_element(tag)
+
+    def create_text_node(self, text: str) -> _TextFragment:
+        return _TextFragment(text)
+
+    def createTextNode(self, text: str) -> _TextFragment:  # noqa: N802
+        return self.create_text_node(text)
+
+    @property
+    def body(self) -> ElementProxy | None:
+        return self.query("body")
+
+    @property
+    def head(self) -> ElementProxy | None:
+        return self.query("head")
+
+    @property
+    def document_element(self) -> ElementProxy | None:
+        return self.query("html")
+
+    @property
+    def documentElement(self) -> ElementProxy | None:  # noqa: N802
+        return self.document_element
+
+    def get_element_by_id(self, element_id: str) -> ElementProxy | None:
+        return self.query(f"#{element_id}")
+
+    def getElementById(self, element_id: str) -> ElementProxy | None:  # noqa: N802
+        return self.get_element_by_id(element_id)
 
 
 class BrowserView(QWebEngineView):
@@ -216,6 +363,7 @@ class BrowserView(QWebEngineView):
         self._next_js_request_id = 1
         self._event_handlers: dict[str, Callable[[BrowserEvent], None]] = {}
         self._next_event_handler_id = 1
+        self._next_bridge_query_id = 1
         self._pending_source_html = ""
 
         self.web_page = _ChromiumPage(self)
@@ -304,7 +452,38 @@ class BrowserView(QWebEngineView):
         exists = self.evaluate_js_sync(f"(function(){{return !!document.querySelector({json.dumps(selector)});}})()")
         if not exists:
             return None
-        return ElementProxy(self, selector)
+        bridge_id = self._assign_bridge_id(selector, first_only=True)
+        return ElementProxy(self, bridge_id or selector)
+
+    def query_all(self, selector: str) -> list[ElementProxy]:
+        bridge_ids = self._assign_bridge_id(selector, first_only=False)
+        return [ElementProxy(self, f'[{BRIDGE_ATTR}={json.dumps(bridge_id)}]') for bridge_id in bridge_ids]
+
+    def _assign_bridge_id(self, selector: str, first_only: bool) -> list[str] | str:
+        query_id = self._next_bridge_query_id
+        self._next_bridge_query_id += 1
+        script = f"""
+(function() {{
+    const nodes = Array.from(document.querySelectorAll({json.dumps(selector)}));
+    if (!nodes.length) return {json.dumps([] if not first_only else '')};
+    const prefix = 'melkam_bridge_{query_id}';
+    const ids = nodes.map((node, index) => {{
+        let bridgeId = node.getAttribute({json.dumps(BRIDGE_ATTR)});
+        if (!bridgeId) {{
+            bridgeId = `${{prefix}}_${{index}}`;
+            node.setAttribute({json.dumps(BRIDGE_ATTR)}, bridgeId);
+        }}
+        return bridgeId;
+    }});
+    return {"ids[0]" if first_only else "ids"};
+}})();
+"""
+        result = self.evaluate_js_sync(script)
+        if first_only:
+            return str(result or "")
+        if not result:
+            return []
+        return [str(item) for item in result]
 
     def evaluate_js_sync(self, script: str, timeout: float = 10.0) -> Any:
         request_id = self._next_js_request_id
