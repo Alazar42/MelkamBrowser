@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Melkam Browser Example</title>
+  <link rel="stylesheet" href="styles/styles.css">
+</head>
+<body>
+  <main class="hero">
+    <p class="eyebrow">Melkam Browser Example</p>
+    <h1 id="title">Python Is A First-Class Web Language</h1>
+    <p id="subtitle" class="subtitle">
+      This page is styled with external CSS and uses a native Python page script to update the DOM.
+    </p>
+    <div class="actions">
+      <button id="btn-primary" class="btn btn-primary">Run Python Action</button>
+      <button id="btn-secondary" class="btn btn-secondary">Toggle Theme Accent</button>
+    </div>
+    <section class="card-grid" id="cards">
+      <article class="card">
+        <h2>Native Python Runtime</h2>
+        <p>Embedded <code>script type="text/python"</code> manipulates elements directly.</p>
+      </article>
+      <article class="card">
+        <h2>Modern Browser Shell</h2>
+        <p>Chrome-like tab behavior, Google home, and file navigation support.</p>
+      </article>
+      <article class="card">
+        <h2>Extensible APIs</h2>
+        <p>Document querying, events, and storage APIs are ready for expansion.</p>
+      </article>
+    </section>
+  </main>
+
+  <script type="text/python" src="scripts/index.py"></script>
+</body>
+</html>
